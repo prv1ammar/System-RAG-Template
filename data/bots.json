@@ -1,0 +1,82 @@
+{
+    "386c7ad6-5b5a-4714-bf6d-2ed498e3bb50": {
+        "id": "386c7ad6-5b5a-4714-bf6d-2ed498e3bb50",
+        "name": "Test isolation Bot",
+        "version": "1.0.0",
+        "description": "A bot to test export storage",
+        "domain": "Testing",
+        "status": "active",
+        "created_at": "2026-01-10T15:49:58.988378",
+        "configuration": {
+            "default_language": "fr",
+            "response_format": "json",
+            "reasoning_level": "analytical",
+            "tone": "professional"
+        },
+        "constraints": {
+            "scope_isolation": true,
+            "external_knowledge_allowed": false,
+            "hallucination_protection": true
+        },
+        "capabilities": {
+            "can_answer_questions": true,
+            "supports_conversation": true,
+            "can_generate_tables": true,
+            "can_generate_charts": true,
+            "can_generate_images": false
+        },
+        "export_json": {
+            "bot": {
+                "id": "386c7ad6-5b5a-4714-bf6d-2ed498e3bb50",
+                "name": "Test isolation Bot",
+                "version": "1.0.0",
+                "description": "A bot to test export storage",
+                "domain": "Testing",
+                "status": "active",
+                "created_at": "2026-01-10T15:49:58.988378"
+            },
+            "capabilities": {
+                "can_answer_questions": true,
+                "supports_conversation": true,
+                "can_generate_tables": true,
+                "can_generate_charts": true,
+                "can_generate_images": false
+            },
+            "interfaces": {
+                "inputs": [
+                    {
+                        "name": "question",
+                        "type": "string",
+                        "required": true
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "answer",
+                        "type": "string"
+                    }
+                ]
+            },
+            "configuration": {
+                "default_language": "fr",
+                "response_format": "json",
+                "reasoning_level": "analytical",
+                "tone": "professional"
+            },
+            "constraints": {
+                "scope_isolation": true,
+                "external_knowledge_allowed": false,
+                "hallucination_protection": true
+            },
+            "integration": {
+                "execution_mode": "sync",
+                "transport": "http",
+                "auth_required": true
+            },
+            "metadata": {
+                "project": "System RAG Platform",
+                "exported_at": "2026-01-10T15:49:59.004378"
+            }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+data/
+node_modules/
+dist/
+custom_chatbot/
+*.log
+tmp/
+data/temp_uploads/
