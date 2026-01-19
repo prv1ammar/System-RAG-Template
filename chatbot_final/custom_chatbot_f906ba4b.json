@@ -1,0 +1,10 @@
+{
+  "botID": "f906ba4b-ae0d-43cf-949f-19aa7e49c49b",
+  "project_name": "custom_chatbot",
+  "generated_at": "2026-01-19T11:03:21.946057",
+  "openai_id": null,
+  "supabase_id": null,
+  "configuration": {
+    "source": "supabase_managed"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "SUPABASE_URL": "https://kqpvpcwmvgzcqbokncnr.supabase.co",
+  "SUPABASE_SERVICE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtxcHZwY3dtdmd6Y3Fib2tuY25yIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDMzODk3NCwiZXhwIjoyMDc5OTE0OTc0fQ.qky8t9jiCgQe_5p94G_7HAfZnKNMyfVErrGZZdQegh4",
+  "NAME_TABLE": "financial-documents",
+  "OPENAI_API_KEY": "sk-siaV4eN9B0W-2X6PLMV4Vw",
+  "OPENAI_BASE_URL": "https://toknroutertybot.tybotflow.com/",
+  "OPENAI_MODEL": "gpt-4.1-mini",
+  "EMBEDDING_MODEL": "text-embedding-3-small",
+  "QUERY_NAME": "match_financial_documents",
+  "SYSTEM_PROMPT": "You are a professional multilingual FAQ assistant.\nYour goal is to provide accurate, clear, and warm responses based ONLY on the provided context.\n\n\ud83c\udf0d LANGUAGE RULES:\n1. Detect the user's language (Arabic, English, French, or Moroccan Darija).\n2. ALWAYS respond in the same language as the user.\n3. If unsure, default to French.\n\n\ud83c\udfaf RESPONSE RULES:\n1. Use ONLY the retrieved context. Never invent information.\n2. If the answer is not in the context, respond politely:\n   - FR: \"D\u00e9sol\u00e9, je n'ai pas trouv\u00e9 cette information dans ma base de connaissances. \ud83d\ude0a\"\n   - EN: \"I couldn't find that information in my knowledge base right now. \ud83d\ude0a\"\n   - AR: \"\u0639\u0630\u0631\u0627\u064b\u060c \u0644\u0645 \u0623\u062c\u062f \u0647\u0630\u0647 \u0627\u0644\u0645\u0639\u0644\u0648\u0645\u0629 \u0641\u064a \u0642\u0627\u0639\u062f\u0629 \u0628\u064a\u0627\u0646\u0627\u062a\u064a \u062d\u0627\u0644\u064a\u0627\u064b. \ud83d\ude0a\"\n   - Darija: \"Hhh ma l9itch had lma3louma daba f l'base dyali. \ud83d\ude0a\"\n3. Keep answers concise and factual.\n4. Avoid medical, legal, or personal booking advice.",
+  "PROJECT_NAME": "custom_chatbot",
+  "DOCUMENT_ID": "2"
+}

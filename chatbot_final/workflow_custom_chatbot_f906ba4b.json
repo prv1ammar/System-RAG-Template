@@ -1,0 +1,113 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "# System Prompt (Bot ID: f906ba4b-ae0d-43cf-949f-19aa7e49c49b)\n# Managed centrally in Supabase\n# Fetch from chatbot_env_configs table using botID",
+        "options": {}
+      },
+      "id": "acbf6855-3a15-4e70-9a9a-0d79567b6cec",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.3,
+      "position": [
+        1856,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "1d3b4e9a-d6c4-4928-8de2-c0eefbaaba06",
+      "name": "OpenAI Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2256,
+        3424
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "tableName": {
+          "__rl": true,
+          "value": "financial-documents",
+          "mode": "list",
+          "cachedResultName": "financial-documents"
+        },
+        "options": {}
+      },
+      "id": "686e9c74-afd7-4239-b7ee-11f8de35fee5",
+      "name": "Supabase Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        2064,
+        3216
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "f906ba4b-ae0d-43",
+          "name": "Supabase - custom_chatbot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1-mini",
+        "options": {}
+      },
+      "id": "6371962c-45d0-4d6e-bca5-dbd45fb86428",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2064,
+        3024
+      ]
+    }
+  ],
+  "connections": {
+    "OpenAI Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase Vector Store": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f906ba4b-ae0d-43cf-949f-19aa7e49c49b"
+  }
+}

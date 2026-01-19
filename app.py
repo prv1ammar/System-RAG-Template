@@ -7,505 +7,340 @@ import sys
 import subprocess
 import time
 import importlib.util
-from rag_service.service import RAGService
+from datetime import datetime
+import uuid
+from database_manager.config_manager import get_config_manager
+from dotenv import load_dotenv
 
-# Set page configuration
+# 🌍 LOAD ENV & SET PAGE CONFIG
+load_dotenv()
+
 st.set_page_config(
     page_title="Chatbot Configuration Platform",
     page_icon="🤖",
     layout="wide"
 )
 
-# Initialize session state
+# 🔒 PRE-CONFIGURED CREDENTIALS (Loaded from .env, not user-configurable)
+# All sensitive and structural configuration is managed via environment variables
+FIXED_SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+FIXED_SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+FIXED_NAME_TABLE = os.getenv("NAME_TABLE", "documents")
+FIXED_QUERY_NAME = os.getenv("QUERY_NAME", "match_documents")
+FIXED_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+FIXED_OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+# 🛡️ ROBUST SESSION STATE INITIALIZATION
 if 'page' not in st.session_state:
     st.session_state.page = 'home'
+
 if 'config' not in st.session_state:
     st.session_state.config = {
-        'SUPABASE_URL': '',
-        'SUPABASE_SERVICE_KEY': '',
-        'NAME_TABLE': '',
-        'OPENAI_API_KEY': '',
-        'OPENAI_BASE_URL': '',
-        'OPENAI_MODEL': '',
-        'EMBEDDING_MODEL': '',
-        'QUERY_NAME': '',
+        'SUPABASE_URL': FIXED_SUPABASE_URL,
+        'SUPABASE_SERVICE_KEY': FIXED_SUPABASE_SERVICE_KEY,
+        'NAME_TABLE': FIXED_NAME_TABLE,
+        'OPENAI_API_KEY': FIXED_OPENAI_API_KEY,
+        'OPENAI_BASE_URL': FIXED_OPENAI_BASE_URL,
+        'OPENAI_MODEL': 'gpt-4.1-mini',
+        'EMBEDDING_MODEL': 'text-embedding-3-small',
+        'QUERY_NAME': FIXED_QUERY_NAME,
         'SYSTEM_PROMPT': '',
-        'PROJECT_NAME': 'custom_chatbot'
+        'PROJECT_NAME': 'custom_chatbot',
+        'DOCUMENT_ID': ''
     }
+
 if 'generated' not in st.session_state:
     st.session_state.generated = False
 
-def save_config_to_env(config):
-    """Save configuration to .env file"""
-    env_content = f"""SUPABASE_URL="{config['SUPABASE_URL']}"
-SUPABASE_SERVICE_KEY="{config['SUPABASE_SERVICE_KEY']}"
-NAME_TABLE="{config['NAME_TABLE']}"
+DEFAULT_SYSTEM_PROMPT = """You are a professional multilingual FAQ assistant.
+Your goal is to provide accurate, clear, and warm responses based ONLY on the provided context.
 
-OPENAI_API_KEY="{config['OPENAI_API_KEY']}"
-OPENAI_BASE_URL="{config['OPENAI_BASE_URL']}"
-OPENAI_MODEL="{config['OPENAI_MODEL']}"
-EMBEDDING_MODEL="{config['EMBEDDING_MODEL']}"
-QUERY_NAME="{config['QUERY_NAME']}"
-"""
-    
-    with open('.env', 'w') as f:
-        f.write(env_content)
-    
+🌍 LANGUAGE RULES:
+1. Detect the user's language (Arabic, English, French, or Moroccan Darija).
+2. ALWAYS respond in the same language as the user.
+3. If unsure, default to French.
+
+🎯 RESPONSE RULES:
+1. Use ONLY the retrieved context. Never invent information.
+2. If the answer is not in the context, respond politely:
+   - FR: "Désolé, je n'ai pas trouvé cette information dans ma base de connaissances. 😊"
+   - EN: "I couldn't find that information in my knowledge base right now. 😊"
+   - AR: "عذراً، لم أجد هذه المعلومة في قاعدة بياناتي حالياً. 😊"
+   - Darija: "Hhh ma l9itch had lma3louma daba f l'base dyali. 😊"
+3. Keep answers concise and factual.
+4. Avoid medical, legal, or personal booking advice."""
+
+if not st.session_state.config.get('SYSTEM_PROMPT'):
+    st.session_state.config['SYSTEM_PROMPT'] = DEFAULT_SYSTEM_PROMPT
+
+def save_config_to_env(config):
+    """Save bot-specific form configuration to a separate file"""
+    config_path = Path(".platform_bot_config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
     return True
 
-def create_custom_chatbot(config, output_dir="custom_chatbot"):
-    """Create a customized chatbot instance"""
-    try:
-        # Create output directory
-        output_path = Path(output_dir)
-        if output_path.exists():
-            shutil.rmtree(output_path)
-        output_path.mkdir(parents=True)
+def load_platform_config():
+    """Load bot-specific form configuration from the separate file"""
+    config_path = Path(".platform_bot_config.json")
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    return None
 
-        # Persistence: Register the bot in Supabase
-        try:
-            service = RAGService()
-            bot_data = {
-                "name": config.get('PROJECT_NAME', 'Custom Bot'),
-                "description": f"RAG Bot for table {config.get('NAME_TABLE')}",
-                "domain": "Enterprise RAG",
-                "configuration": {
-                    "default_language": "fr",
-                    "response_format": "json",
-                    "reasoning_level": "analytical",
-                    "tone": "professional"
-                }
-            }
-            service.create_bot(bot_data)
-        except Exception as db_error:
-            print(f"[UI] DB Persistence warning: {db_error}")
-            # We continue even if DB fails to allow file generation
-        
-        # Create agent_FAQ directory
-        agent_dir = output_path / "agent_FAQ"
-        agent_dir.mkdir()
-        
-        # Create utils directory
-        utils_dir = output_path / "utils"
-        utils_dir.mkdir()
-        
-        # 1. Create .env file with user configuration
-        env_content = f"""SUPABASE_URL="{config['SUPABASE_URL']}"
-SUPABASE_SERVICE_KEY="{config['SUPABASE_SERVICE_KEY']}"
-NAME_TABLE="{config['NAME_TABLE']}"
+class UniversalRAGAgent:
+    """A RAG Agent that works purely from a configuration dictionary, no local folders needed."""
+    def __init__(self, config):
+        self.config = config
+        # Hardening for LangChain sync client - fallback to os.getenv for fixed credentials
+        self.openai_api_key = str(config.get('OPENAI_API_KEY') or os.getenv('OPENAI_API_KEY', '')).strip()
+        self.openai_base_url = str(config.get('OPENAI_BASE_URL') or os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')).strip()
+        self.openai_model = str(config.get('OPENAI_MODEL', 'gpt-4.1-mini')).strip()
+        self.embedding_model = str(config.get('EMBEDDING_MODEL', 'text-embedding-3-small')).strip()
+        self.supabase_url = str(config.get('SUPABASE_URL') or os.getenv('SUPABASE_URL', '')).strip()
+        self.supabase_key = str(config.get('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_SERVICE_KEY', '')).strip()
+        self.table_name = str(config.get('NAME_TABLE') or os.getenv('NAME_TABLE', '')).strip()
+        self.query_name = str(config.get('QUERY_NAME') or os.getenv('QUERY_NAME', 'match_documents')).strip()
+        self.system_prompt = str(config.get('SYSTEM_PROMPT') or DEFAULT_SYSTEM_PROMPT).strip()
+        self.document_id = str(config.get('DOCUMENT_ID') or os.getenv('DOCUMENT_ID', '')).strip()
 
-OPENAI_API_KEY="{config['OPENAI_API_KEY']}"
-OPENAI_BASE_URL="{config['OPENAI_BASE_URL']}"
-OPENAI_MODEL="{config['OPENAI_MODEL']}"
-EMBEDDING_MODEL="{config['EMBEDDING_MODEL']}"
-QUERY_NAME="{config['QUERY_NAME']}"
-"""
-        (output_path / ".env").write_text(env_content, encoding='utf-8')
-        
-        # 2. Create __init__.py files
-        (agent_dir / "__init__.py").write_text("", encoding='utf-8')
-        (utils_dir / "__init__.py").write_text("", encoding='utf-8')
-        
-        # 3. Create prompt_agent_faq.py with custom system prompt
-        prompt_content = f'''FAQ_SYSTEM_PROMPT = """{config['SYSTEM_PROMPT']}"""
-'''
-        # Use UTF-8 encoding to handle special characters
-        (agent_dir / "prompt_agent_faq.py").write_text(prompt_content, encoding='utf-8')
-        
-        # 4. Copy and modify faq_agent.py
-        faq_agent_content = '''from langchain_core.prompts import ChatPromptTemplate
-
-from agent_FAQ.prompt_agent_faq import FAQ_SYSTEM_PROMPT
-from agent_FAQ.tools import retrieve_faq_context
-from utils.llms import LLMModel
-
-class FAQAgent:
-    
-    def __init__(self):
-        self.llm = LLMModel().get_model()
-        
-        from langchain_core.messages import SystemMessage
-        self.prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content=FAQ_SYSTEM_PROMPT),
-            ("human", "Context from knowledge base:\\n{context}\\n\\nQuestion: {question}")
-        ])
-    
     def run(self, question: str) -> str:
-       
-        rag_result = retrieve_faq_context(question)
-        
-        
-        if not rag_result["found"] or not rag_result["content"].strip():
-            return "This information is not available in our knowledge base."
-        
-        
-        response = self.llm.invoke(
-            self.prompt.format_messages(
-                context=rag_result["content"],
-                question=question
-            )
-        )
-        
-        return response.content.strip()
-'''
-        (agent_dir / "faq_agent.py").write_text(faq_agent_content, encoding='utf-8')
-        
-        # 5. Copy and modify tools.py
-        tools_content = f'''import os
-from langchain_openai import OpenAIEmbeddings
-from supabase.client import create_client
-
-def retrieve_faq_context(question: str, top_k: int = 3) -> dict:
-
-    SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
-    TABLE_NAME = os.getenv("NAME_TABLE")
-    QUERY_NAME = os.getenv("QUERY_NAME")
-    
-    
-    if not SUPABASE_URL or not SUPABASE_KEY or not OPENAI_API_KEY or not TABLE_NAME:
-        print("[FAQ] Missing environment variables")
-        return {{"found": False, "content": ""}}
-    
-    try:
-        # Initialize
-        embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=OPENAI_API_KEY)
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        
-        # Try with direct RPC call (Vector Search)
+        if not self.openai_api_key: return "❌ OpenAI API Key is missing."
         try:
-            query_embedding = embeddings.embed_query(question)
+            from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+            from supabase import create_client
             
-            params = {{
-                "query_embedding": query_embedding,
-                "match_threshold": 0.1,
-                "match_count": top_k
-            }}
+            embeddings = OpenAIEmbeddings(model=self.embedding_model, api_key=self.openai_api_key, openai_api_base=self.openai_base_url)
+            query_embedding = embeddings.embed_query(str(question))
+            supabase = create_client(self.supabase_url, self.supabase_key)
             
-            response = supabase.rpc(QUERY_NAME, params=params).execute()
-            docs = response.data
+            bot_id = self.config.get('botID')
+            document_id = self.document_id
             
-            if not docs:
-                print(f"[FAQ] No results for: {{question}}")
-                return {{"found": False, "content": ""}}
+            fallback_params = [
+                # New standard: Filter by document_id
+                {"query_embedding": query_embedding, "match_threshold": 0.1, "match_count": 3, "p_document_id": document_id} if document_id else None,
+                # Legacy: Filter by bot_id
+                {"query_embedding": query_embedding, "match_threshold": 0.1, "match_count": 3, "p_bot_id": bot_id} if bot_id else None,
+                # Fallback: No filter
+                {"query_embedding": query_embedding, "match_threshold": 0.1, "match_count": 3},
+                {"query_embedding": query_embedding, "match_count": 3},
+                {"query_embedding": query_embedding}
+            ]
             
-            content_parts = []
-            for doc in docs:
-                if 'content' in doc and doc['content']:
-                    content_parts.append(doc['content'])
-                elif 'page_content' in doc and doc['page_content']:
-                    content_parts.append(doc['page_content'])
-                elif 'text' in doc and doc['text']:
-                    content_parts.append(doc['text'])
-            
-            content = "\\n\\n".join(content_parts)
-            print(f"[FAQ] Found {{len(docs)}} documents via vector search for: {{question}}")
-            return {{"found": True, "content": content}}
-            
-        except Exception as vector_error:
-            print(f"[FAQ] Vector search error: {{vector_error}}")
-            print("[FAQ] Trying direct Supabase query (fallback)...")
-            
-            # Fallback to direct Supabase query (fetch recent/top rows)
-            try:
-                # Simple direct query to Supabase table
-                # Note: This is not semantic search, just fetching rows
-                response = supabase.table(TABLE_NAME).select("*").limit(top_k).execute()
-                
-                if not response.data:
-                    print(f"[FAQ] No documents found in table: {{TABLE_NAME}}")
-                    return {{"found": False, "content": ""}}
-                
-                # Extract content from documents
-                content_parts = []
-                for doc in response.data:
-                    if 'content' in doc and doc['content']:
-                        content_parts.append(doc['content'])
-                    elif 'page_content' in doc and doc['page_content']:
-                        content_parts.append(doc['page_content'])
-                    elif 'text' in doc and doc['text']:
-                        content_parts.append(doc['text'])
-                
-                if not content_parts:
-                    print(f"[FAQ] No content found in documents")
-                    return {{"found": False, "content": ""}}
-                
-                content = "\\n\\n".join(content_parts[:top_k])
-                print(f"[FAQ] Found {{len(content_parts)}} documents via direct query for: {{question}}")
-                return {{"found": True, "content": content}}
-                
-            except Exception as direct_error:
-                print(f"[FAQ] Direct query error: {{direct_error}}")
-                return {{"found": False, "content": ""}}
+            response = None
+            for p_set in [p for p in fallback_params if p is not None]:
+                try:
+                    response = supabase.rpc(self.query_name, params=p_set).execute()
+                    break 
+                except Exception as e:
+                    if any(code in str(e) for code in ["42804", "PGRST202", "p_bot_id"]): continue
+                    raise e
+                    
+            if response is None: return "Connection failed."
+            if not response.data: return "No relevant information found. 😊"
+
+            context = "\n\n".join([str(doc.get('content', doc.get('page_content', ''))) for doc in response.data])
+            llm = ChatOpenAI(api_key=self.openai_api_key, base_url=self.openai_base_url, model=self.openai_model, temperature=0)
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_core.messages import SystemMessage
+            prompt_template = ChatPromptTemplate.from_messages([SystemMessage(content=self.system_prompt), ("human", f"Context:\n{context}\n\nQuestion: {question}")])
+            return llm.invoke(prompt_template.format_messages()).content.strip()
+        except Exception as e: return f"Error: {str(e)}"
+
+def create_custom_chatbot_streamlined(config):
+    """Streamlined build: JSON shell + Supabase + n8n workflow.json"""
+    bot_id = str(uuid.uuid4())
+    try:
+        mgr = get_config_manager()
+        db_ids = mgr.save_config(bot_id, config)
+        if not db_ids: return False, "Database error"
+
+        final_dir = Path("chatbot_final")
+        final_dir.mkdir(exist_ok=True)
         
-    except Exception as e:
-        print(f"[FAQ] General error: {{e}}")
-        return {{"found": False, "content": ""}}
-'''
-        (agent_dir / "tools.py").write_text(tools_content, encoding='utf-8')
+        # Create bot configuration JSON
+        chatbot_data = {
+            "botID": bot_id,
+            "project_name": config.get('PROJECT_NAME', 'bot'),
+            "generated_at": datetime.now().isoformat(),
+            "openai_id": db_ids.get('openai'),
+            "supabase_id": db_ids.get('supabase'),
+            "configuration": {"source": "supabase_managed"}
+        }
+        (final_dir / f"{config['PROJECT_NAME']}_{bot_id[:8]}.json").write_text(json.dumps(chatbot_data, indent=2), encoding='utf-8')
         
-        # 6. Copy and modify llms.py
-        llms_content = '''import os
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-
-
-load_dotenv()
-
-
-class LLMModel:
-    def get_model(self):
-        model = os.getenv("OPENAI_MODEL")
-        base_url = os.getenv("OPENAI_BASE_URL")
-        api_key = os.getenv("OPENAI_API_KEY")
-
+        # Create n8n-style workflow.json with LangChain nodes
+        workflow_data = {
+            "nodes": [
+                {
+                    "parameters": {
+                        "promptType": "define",
+                        "text": f"# System Prompt (Bot ID: {bot_id})\n# Managed centrally in Supabase\n# Fetch from chatbot_env_configs table using botID",
+                        "options": {}
+                    },
+                    "id": str(uuid.uuid4()),
+                    "name": "AI Agent",
+                    "type": "@n8n/n8n-nodes-langchain.agent",
+                    "typeVersion": 1.3,
+                    "position": [1856, 3024]
+                },
+                {
+                    "parameters": {
+                        "model": config.get('EMBEDDING_MODEL', 'text-embedding-3-small'),
+                        "options": {}
+                    },
+                    "id": str(uuid.uuid4()),
+                    "name": "OpenAI Embeddings",
+                    "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+                    "typeVersion": 1,
+                    "position": [2256, 3424]
+                },
+                {
+                    "parameters": {
+                        "mode": "retrieve-as-tool",
+                        "tableName": {
+                            "__rl": True,
+                            "value": config.get('NAME_TABLE', 'documents'),
+                            "mode": "list",
+                            "cachedResultName": config.get('NAME_TABLE', 'documents')
+                        },
+                        "options": {}
+                    },
+                    "id": str(uuid.uuid4()),
+                    "name": "Supabase Vector Store",
+                    "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+                    "typeVersion": 1.3,
+                    "position": [2064, 3216],
+                    "credentials": {
+                        "supabaseApi": {
+                            "id": bot_id[:16],
+                            "name": f"Supabase - {config.get('PROJECT_NAME', 'bot')}"
+                        }
+                    }
+                },
+                {
+                    "parameters": {
+                        "model": config.get('OPENAI_MODEL', 'gpt-4.1-mini'),
+                        "options": {}
+                    },
+                    "id": str(uuid.uuid4()),
+                    "name": "OpenAI Chat Model",
+                    "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+                    "typeVersion": 1,
+                    "position": [2064, 3024]
+                }
+            ],
+            "connections": {
+                "OpenAI Embeddings": {
+                    "ai_embedding": [
+                        [
+                            {
+                                "node": "Supabase Vector Store",
+                                "type": "ai_embedding",
+                                "index": 0
+                            }
+                        ]
+                    ]
+                },
+                "Supabase Vector Store": {
+                    "ai_tool": [
+                        [
+                            {
+                                "node": "AI Agent",
+                                "type": "ai_tool",
+                                "index": 0
+                            }
+                        ]
+                    ]
+                },
+                "OpenAI Chat Model": {
+                    "ai_languageModel": [
+                        [
+                            {
+                                "node": "AI Agent",
+                                "type": "ai_languageModel",
+                                "index": 0
+                            }
+                        ]
+                    ]
+                }
+            },
+            "pinData": {},
+            "meta": {
+                "templateCredsSetupCompleted": True,
+                "instanceId": bot_id
+            }
+        }
         
-        if not model:
-            raise ValueError("OPENAI_MODEL is missing in .env")
-        if not base_url:
-            raise ValueError("OPENAI_BASE_URL is missing in .env")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY is missing in .env")
-
-        return ChatOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            temperature=0
-        )
-'''
-        (utils_dir / "llms.py").write_text(llms_content, encoding='utf-8')
+        (final_dir / f"workflow_{config['PROJECT_NAME']}_{bot_id[:8]}.json").write_text(json.dumps(workflow_data, indent=2), encoding='utf-8')
         
-        # 7. Create a simple test script
-        test_content = '''#!/usr/bin/env python3
-import sys
-import os
-# Force UTF-8 encoding for Windows consoles
-if sys.platform.startswith('win'):
-    sys.stdout.reconfigure(encoding='utf-8')
+        return True, bot_id
+    except Exception as e: return False, str(e)
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# --- Original Visual Design Pages ---
 
-from agent_FAQ.faq_agent import FAQAgent
-
-def test_chatbot():
-    """Test the generated chatbot"""
-    print("Testing your custom chatbot...")
-    print("=" * 50)
-    
-    agent = FAQAgent()
-    
-    # Test questions
-    test_questions = [
-        "What services do you offer?",
-        "How can I contact support?",
-        "What are your business hours?"
-    ]
-    
-    for question in test_questions:
-        print(f"Q: {question}")
-        answer = agent.run(question)
-        print(f"A: {answer}")
-        print("-" * 50)
-    
-    print("\\nChatbot test completed!")
-    print("To use your chatbot in your own code:")
-    print("")
-    print("from agent_FAQ.faq_agent import FAQAgent")
-    print("")
-    print("agent = FAQAgent()")
-    print('answer = agent.run("Your question here")')
-    print("print(answer)")
-
-if __name__ == "__main__":
-    test_chatbot()
-'''
-        (output_path / "test_chatbot.py").write_text(test_content, encoding='utf-8')
-        
-        # 8. Create README
-        readme_content = f'''# Custom Chatbot Instance
-
-This is your custom RAG chatbot instance generated by the Chatbot Configuration Platform.
-
-## Configuration
-- **Supabase URL**: {config['SUPABASE_URL'][:30]}...
-- **Supabase Table**: {config['NAME_TABLE']}
-- **OpenAI Model**: {config['OPENAI_MODEL']}
-
-## Files Structure
-```
-custom_chatbot/
-├── .env                    # Environment variables
-├── agent_FAQ/
-│   ├── __init__.py
-│   ├── faq_agent.py       # Main agent class
-│   ├── prompt_agent_faq.py # Custom system prompt
-│   └── tools.py           # Supabase retrieval
-├── utils/
-│   ├── __init__.py
-│   └── llms.py            # OpenAI client
-├── test_chatbot.py        # Test script
-└── README.md              # This file
-```
-
-## Usage
-
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-2. Test your chatbot:
-```bash
-python test_chatbot.py
-```
-
-3. Use in your own code:
-```python
-from agent_FAQ.faq_agent import FAQAgent
-
-agent = FAQAgent()
-answer = agent.run("Your question here")
-print(answer)
-```
-
-## Requirements
-Create a `requirements.txt` file with:
-```
-streamlit>=1.28.0
-langchain>=0.1.0
-langchain-openai>=0.0.5
-supabase>=2.3.0
-python-dotenv>=1.0.0
-```
-
-## Custom Prompt
-Your custom system prompt has been configured in `agent_FAQ/prompt_agent_faq.py`.
-'''
-        (output_path / "README.md").write_text(readme_content, encoding='utf-8')
-        
-        # 9. Create requirements.txt
-        requirements_content = '''streamlit>=1.28.0
-langchain>=0.1.0
-langchain-openai>=0.0.5
-supabase>=2.3.0
-python-dotenv>=1.0.0
-'''
-        (output_path / "requirements.txt").write_text(requirements_content, encoding='utf-8')
-        
-        return True, output_dir
-        
-    except Exception as e:
-        return False, str(e)
-
-# Page rendering functions
 def render_home():
     st.title("🤖 Chatbot Configuration Platform")
     st.markdown("""
     ## Welcome to the RAG Agent Chatbot Configuration Platform
     
-    This platform allows you to configure and generate your own custom RAG (Retrieval-Augmented Generation) chatbot
-    that retrieves answers from your knowledge base stored in Supabase.
+    This platform allows you to generate your own custom RAG (Retrieval-Augmented Generation) chatbot
+    with just a few clicks - all infrastructure is pre-configured!
     
     ### How it works:
-    1. **Configure** your Supabase connection and OpenAI settings
-    2. **Customize** your chatbot's system prompt
-    3. **Generate** your personalized chatbot instance
-    4. **Use** your chatbot in your own applications
+    1. **Select** your preferred AI models
+    2. **Generate** your chatbot instance
+    3. **Deploy** and use immediately
     
-    ### What you'll need:
-    - Supabase URL and Service Key
-    - Name of your documents table
-    - OpenAI API Key, Base URL, and Model
-    - A system prompt for your chatbot
+    The platform automatically provides:
+    - ✅ Optimized multilingual system prompt
+    - ✅ Pre-configured Supabase connection
+    - ✅ Secure API access
+    - ✅ N8N workflow export
+    
+    ### What you configure:
+    - Project name
+    - OpenAI chat model (gpt-4.1-mini, gpt-4, etc.)
+    - Embedding model (text-embedding-3-small, etc.)
     """)
-    
     if st.button("🚀 Start Configuration", type="primary", use_container_width=True):
         st.session_state.page = 'config'
         st.rerun()
 
 def render_config():
-    st.title("⚙️ Chatbot Configuration")
-    st.markdown("Configure your Supabase connection and OpenAI settings below.")
+    st.title("⚙️ AI Model Configuration")
+    st.markdown("Select the AI models for your chatbot. All other settings are pre-configured.")
+    
+    st.info("🔒 **Pre-configured Settings:**\n- Supabase connection\n- OpenAI API access\n- Document table and query settings")
     
     with st.form("config_form"):
-        st.subheader("Supabase Configuration")
-        supabase_url = st.text_input(
-            "SUPABASE_URL",
-            value=st.session_state.config['SUPABASE_URL'],
-            placeholder="https://your-project.supabase.co",
-            help="Your Supabase project URL"
-        )
-        
-        supabase_key = st.text_input(
-            "SUPABASE_SERVICE_KEY",
-            value=st.session_state.config['SUPABASE_SERVICE_KEY'],
-            type="password",
-            placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-            help="Your Supabase service role key (keep this secret!)"
-        )
-        
-        table_name = st.text_input(
-            "NAME_TABLE",
-            value=st.session_state.config['NAME_TABLE'],
-            placeholder="documents",
-            help="Name of your Supabase table containing documents"
-        )
-
         st.subheader("Project Configuration")
         project_name = st.text_input(
-            "PROJECT_NAME (Chatbot Name)",
+            "Chatbot Name", 
             value=st.session_state.config.get('PROJECT_NAME', 'custom_chatbot'),
-            placeholder="my_finance_bot",
-            help="Unique name for your chatbot project (folder name)"
+            help="A unique name for your chatbot project"
         )
         
-        st.subheader("OpenAI Configuration")
-        openai_key = st.text_input(
-            "OPENAI_API_KEY",
-            value=st.session_state.config['OPENAI_API_KEY'],
-            type="password",
-            placeholder="sk-...",
-            help="Your OpenAI API key"
+        document_id = st.text_input(
+            "Document ID (Foreign Key)",
+            value=st.session_state.config.get('DOCUMENT_ID', ''),
+            help="The foreign key ID to filter documents for this specific chatbot context."
         )
         
-        openai_base = st.text_input(
-            "OPENAI_BASE_URL",
-            value=st.session_state.config['OPENAI_BASE_URL'],
-            placeholder="https://api.openai.com/v1",
-            help="OpenAI API base URL (default: https://api.openai.com/v1)"
+        st.subheader("AI Model Selection")
+        openai_model = st.selectbox(
+            "OpenAI Chat Model",
+            options=['gpt-4.1-mini', 'gpt-4', 'gpt-3.5-turbo', 'gpt-4-turbo'],
+            index=0,
+            help="The language model for generating responses"
         )
         
-        openai_model = st.text_input(
-            "OPENAI_MODEL",
-            value=st.session_state.config['OPENAI_MODEL'],
-            placeholder="gpt-3.5-turbo",
-            help="OpenAI model name (e.g., gpt-3.5-turbo, gpt-4)"
-        )
-        
-        embedding_model = st.text_input(
-            "EMBEDDING_MODEL",
-            value=st.session_state.config['EMBEDDING_MODEL'],
-            placeholder="text-embedding-3-small",
-            help="OpenAI embedding model name (e.g., text-embedding-3-small, text-embedding-ada-002)"
-        )
-        
-        query_name = st.text_input(
-            "QUERY_NAME",
-            value=st.session_state.config['QUERY_NAME'],
-            placeholder="match_documents",
-            help="Supabase query function name for vector search"
-        )
-        
-        st.subheader("Chatbot Prompt Configuration")
-        system_prompt = st.text_area(
-            "SYSTEM_PROMPT",
-            value=st.session_state.config['SYSTEM_PROMPT'],
-            placeholder="Enter your custom system prompt here...",
-            height=200,
-            help="System prompt that defines your chatbot's behavior and rules"
+        embedding_model = st.selectbox(
+            "Embedding Model",
+            options=['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002'],
+            index=0,
+            help="The model for creating vector embeddings"
         )
         
         col1, col2 = st.columns(2)
@@ -513,26 +348,16 @@ def render_config():
             if st.form_submit_button("⬅️ Back to Home"):
                 st.session_state.page = 'home'
                 st.rerun()
-        
         with col2:
             if st.form_submit_button("Next ➡️", type="primary"):
-                # Save configuration
-                st.session_state.config = {
-                    'SUPABASE_URL': supabase_url.strip(),
-                    'SUPABASE_SERVICE_KEY': supabase_key.strip(),
-                    'NAME_TABLE': table_name.strip(),
-                    'OPENAI_API_KEY': openai_key.strip(),
-                    'OPENAI_BASE_URL': openai_base.strip(),
-                    'OPENAI_MODEL': openai_model.strip(),
-                    'EMBEDDING_MODEL': embedding_model.strip(),
-                    'QUERY_NAME': query_name.strip(),
-                    'SYSTEM_PROMPT': system_prompt,
-                    'PROJECT_NAME': project_name.strip().replace(" ", "_") # Basic sanitization
-                }
-                
-                # Save to .env file
+                st.session_state.config.update({
+                    'OPENAI_MODEL': openai_model,
+                    'EMBEDDING_MODEL': embedding_model,
+                    'PROJECT_NAME': project_name.strip().replace(" ", "_"),
+                    'DOCUMENT_ID': document_id.strip(),
+                    'SYSTEM_PROMPT': DEFAULT_SYSTEM_PROMPT
+                })
                 save_config_to_env(st.session_state.config)
-                
                 st.session_state.page = 'generate'
                 st.rerun()
 
@@ -540,221 +365,131 @@ def render_generate():
     st.title("🚀 Generate Your Chatbot")
     st.markdown("Review your configuration and generate your custom chatbot instance.")
     
-    # Display configuration summary
     st.subheader("Configuration Summary")
-    
     col1, col2 = st.columns(2)
-    
     with col1:
         st.markdown("**Supabase Settings**")
-        st.write(f"URL: `{st.session_state.config['SUPABASE_URL'][:50]}...`" if len(st.session_state.config['SUPABASE_URL']) > 50 else f"URL: `{st.session_state.config['SUPABASE_URL']}`")
+        st.write(f"URL: `{st.session_state.config['SUPABASE_URL'][:30]}...`")
         st.write(f"Table: `{st.session_state.config['NAME_TABLE']}`")
-        
     with col2:
         st.markdown("**OpenAI Settings**")
         st.write(f"Model: `{st.session_state.config['OPENAI_MODEL']}`")
-        st.write(f"Base URL: `{st.session_state.config['OPENAI_BASE_URL']}`")
-        st.write(f"API Key: `{'*' * 20}{st.session_state.config['OPENAI_API_KEY'][-4:] if st.session_state.config['OPENAI_API_KEY'] else ''}`")
+        st.write(f"API Key: `{'*' * 15}`")
     
-    st.subheader("System Prompt Preview")
-    with st.expander("View your custom system prompt"):
+    with st.expander("View System Prompt"):
         st.code(st.session_state.config['SYSTEM_PROMPT'], language="markdown")
     
     st.divider()
     
-    # Generation section
-    st.subheader("Generate Your Chatbot")
-    
     if st.button("🚀 Start Generation", type="primary", use_container_width=True):
-        project_name = st.session_state.config.get('PROJECT_NAME', 'custom_chatbot')
-        with st.spinner(f"Generating chatbot '{project_name}'..."):
-            success, result = create_custom_chatbot(st.session_state.config, output_dir=project_name)
-            
+        with st.spinner("Saving configuration to cloud..."):
+            success, result = create_custom_chatbot_streamlined(st.session_state.config)
             if success:
                 st.session_state.generated = True
-                st.session_state.auto_setup_pending = True
-                st.success(f"✅ Chatbot generated successfully in directory: `{result}/`")
-                
-                st.markdown("### 🎉 Your Chatbot is Ready!")
+                st.success(f"✅ Chatbot configuration successfully created!")
+                st.markdown("### 🎉 Ready!")
                 st.markdown(f"""
-                Your custom RAG chatbot has been generated in the `{result}/` directory.
+                Your bot is now saved in Supabase and `chatbot_final/`. 
                 
-                **Next Steps:**
-                1. **Navigate to the directory:**
-                   ```bash
-                   cd {result}
-                   ```
-                2. **Install dependencies:**
-                   ```bash
-                   pip install -r requirements.txt
-                   ```
-                3. **Test your chatbot:**
-                   ```bash
-                   python test_chatbot.py
-                   ```
-                4. **Use in your own code:**
-                   ```python
-                   from agent_FAQ.faq_agent import FAQAgent
-                   
-                   agent = FAQAgent()
-                   answer = agent.run("Your question here")
-                   print(answer)
-                   ```
+                **Generated Files:**
+                - `{st.session_state.config['PROJECT_NAME']}_{result[:8]}.json` - Bot configuration shell
+                - `workflow_{st.session_state.config['PROJECT_NAME']}_{result[:8]}.json` - n8n workflow file
                 
-                **Files Generated:**
-                - `.env` - Your configuration
-                - `agent_FAQ/` - Chatbot agent code
-                - `utils/` - Utility functions
-                - `test_chatbot.py` - Test script
-                - `README.md` - Documentation
-                - `requirements.txt` - Dependencies
+                The workflow.json can be imported directly into n8n for automation!
                 """)
-                
-                # Offer download option
-                st.download_button(
-                    label="📥 Download Chatbot as ZIP",
-                    data=open(f"{result}.zip", "rb").read() if os.path.exists(f"{result}.zip") else b"",
-                    file_name=f"{result}.zip",
-                    mime="application/zip",
-                    disabled=not os.path.exists(f"{result}.zip")
-                )
+                if st.button("💬 Open Test Chat", use_container_width=True):
+                    st.session_state.page = 'test_interface'
+                    st.rerun()
             else:
-                st.error(f"❌ Failed to generate chatbot: {result}")
+                st.error(f"❌ Failed: {result}")
+    
+    if st.button("⬅️ Back to Config"):
+        st.session_state.page = 'config'
+        st.rerun()
 
 def render_test_interface():
     st.title("💬 Test Your Chatbot")
-    
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display chat messages from history on app rerun
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # React to user input
+    if "messages" not in st.session_state: st.session_state.messages = []
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): st.markdown(msg["content"])
+        
     if prompt := st.chat_input("Ask your chatbot something..."):
-        # Display user message in chat message container
         st.chat_message("user").markdown(prompt)
-        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-
-        # Generate response
-        try:
-            # Dynamic import of the agent
-            if 'agent_instance' not in st.session_state:
-                project_name = st.session_state.config.get('PROJECT_NAME', 'custom_chatbot')
-                agent_path = os.path.join(os.getcwd(), project_name, 'agent_FAQ', 'faq_agent.py')
-                
-                # Use importlib to load module from path
-                spec = importlib.util.spec_from_file_location("faq_agent", agent_path)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules["faq_agent"] = module
-                spec.loader.exec_module(module)
-                
-                st.session_state.agent_instance = module.FAQAgent()
+        
+        with st.spinner("Thinking..."):
+            agent = UniversalRAGAgent(st.session_state.config)
+            response = agent.run(prompt)
             
-            with st.spinner("Thinking..."):
-                response = st.session_state.agent_instance.run(prompt)
-                
-            # Display assistant response in chat message container
-            with st.chat_message("assistant"):
-                st.markdown(response)
-            # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            
-        except Exception as e:
-            st.error(f"Error generating response: {e}")
-            st.error("Please make sure the chatbot was generated successfully and dependencies are installed.")
-
-def automate_setup(output_dir):
-    """Automate dependency installation and testing"""
-    status_container = st.empty()
+        with st.chat_message("assistant"): st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
     
-    with status_container.container():
-        st.info("🛠️ Setting up your chatbot environment...")
-        
-        # 1. Install dependencies
-        progress_text = "Installing dependencies..."
-        my_bar = st.progress(0, text=progress_text)
-        
-        try:
-            # Install in current environment for instant testing
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", os.path.join(output_dir, "requirements.txt")])
-            my_bar.progress(50, text="Dependencies installed! Running self-test...")
-            
-            # 2. Run test script
-            result = subprocess.run(
-                [sys.executable, os.path.join(output_dir, "test_chatbot.py")], 
-                capture_output=True, 
-                text=True, 
-                encoding='utf-8' # Force utf-8 for capturing output
-            )
-            
-            if result.returncode == 0:
-                my_bar.progress(100, text="Self-test passed!")
-                time.sleep(1)
-                st.success("✅ Setup complete! Redirecting to chat...")
-                time.sleep(1)
-                return True
-            else:
-                st.error("❌ Self-test failed prior to chat.")
-                st.code(result.stderr)
-                return False
-                
-        except Exception as e:
-            st.error(f"❌ Automation failed: {e}")
-            return False
+    if st.button("⬅️ Back to Generate"):
+        st.session_state.page = 'generate'
+        st.rerun()
 
-# Main app logic
+def render_fleet_tester():
+    st.title("🚢 Fleet Tester")
+    final_dir = Path("chatbot_final")
+    bots = [f for f in final_dir.glob("*.json") if not f.name.startswith("workflow_")] if final_dir.exists() else []
+    if not bots:
+        st.info("No chatbots found.")
+        return
+    selected_bot = st.selectbox("Select bot", [f.name for f in bots])
+    if selected_bot:
+        with open(final_dir / selected_bot, 'r', encoding='utf-8') as f:
+            bot_config = json.load(f)
+        
+        if 'tester_agent' not in st.session_state or st.session_state.get('current_tester_id') != bot_config.get('botID'):
+            with st.spinner("Fetching cloud config..."):
+                mgr = get_config_manager()
+                cloud_config = mgr.get_config(bot_config.get('botID'))
+                full_config = {**cloud_config, 'botID': bot_config.get('botID')}
+                st.session_state.tester_agent = UniversalRAGAgent(full_config)
+                st.session_state.current_tester_id = bot_config.get('botID')
+                st.session_state.tester_messages = []
+        
+        for msg in st.session_state.tester_messages:
+            with st.chat_message(msg["role"]): st.markdown(msg["content"])
+        if prompt := st.chat_input("Message fleet bot..."):
+            st.session_state.tester_messages.append({"role": "user", "content": prompt})
+            st.chat_message("user").markdown(prompt)
+            resp = st.session_state.tester_agent.run(prompt)
+            st.chat_message("assistant").markdown(resp)
+            st.session_state.tester_messages.append({"role": "assistant", "content": resp})
+
+# --- Sidebar & Main ---
+
 def main():
-    # Sidebar navigation
+    if 'config_loaded' not in st.session_state:
+        saved = load_platform_config()
+        if saved: st.session_state.config.update(saved)
+        st.session_state.config_loaded = True
+
     with st.sidebar:
         st.title("Navigation")
-        st.divider()
-        
         if st.button("🏠 Home", use_container_width=True):
             st.session_state.page = 'home'
             st.rerun()
-        
         if st.button("⚙️ Configuration", use_container_width=True):
             st.session_state.page = 'config'
             st.rerun()
-        
         if st.button("🚀 Generate", use_container_width=True):
             st.session_state.page = 'generate'
             st.rerun()
-        
         st.divider()
-        st.markdown("### About")
-        st.markdown("""
-        This platform helps you create custom RAG chatbots that retrieve answers from your Supabase knowledge base.
-        
-        **Features:**
-        - Configure Supabase connection
-        - Set OpenAI parameters
-        - Customize system prompt
-        - Generate ready-to-use chatbot
-        """)
-    
-    # Render current page
-    if st.session_state.page == 'home':
-        render_home()
-    elif st.session_state.page == 'config':
-        render_config()
-    elif st.session_state.page == 'generate':
-        render_generate()
-         # Check if generation was triggered and successful, then run automation
-        if st.session_state.get('generated', False) and st.session_state.get('auto_setup_pending', True):
-             project_name = st.session_state.config.get('PROJECT_NAME', 'custom_chatbot')
-             if automate_setup(project_name):
-                 st.session_state.auto_setup_pending = False
-                 st.session_state.page = 'test_interface'
-                 st.rerun()
-                 
-    elif st.session_state.page == 'test_interface':
-        render_test_interface()
+        if st.button("💬 Test Current", use_container_width=True):
+            st.session_state.page = 'test_interface'
+            st.rerun()
+        if st.button("🚢 Fleet Tester", use_container_width=True):
+            st.session_state.page = 'fleet'
+            st.rerun()
+
+    if st.session_state.page == 'home': render_home()
+    elif st.session_state.page == 'config': render_config()
+    elif st.session_state.page == 'generate': render_generate()
+    elif st.session_state.page == 'test_interface': render_test_interface()
+    elif st.session_state.page == 'fleet': render_fleet_tester()
 
 if __name__ == "__main__":
     main()
